@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Empty vector — used as the Android 12+ System SplashScreen's mandatory
+     "animated icon". The API requires some drawable be set; this one draws
+     nothing, so only the plain background (below) is visible, matching the
+     in-app SplashScreen widget that takes over immediately after. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="1dp"
+    android:height="1dp"
+    android:viewportWidth="1"
+    android:viewportHeight="1" />
