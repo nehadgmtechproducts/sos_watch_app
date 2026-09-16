@@ -5,6 +5,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import 'contacts_store.dart';
+import '../utils/phone.dart';
 
 /// Sends an emergency SMS — including the device's current location as a Google
 /// Maps link — to every contact that has a phone number.
@@ -24,18 +25,27 @@ class EmergencySmsService {
 
   static const MethodChannel _native = MethodChannel('sos_emergency/sms');
 
-  Future<EmergencySmsResult> sendLocationToContacts(
+  Future<EmergencySmsOutcome> sendLocationToContacts(
     List<DemoContact> contacts, {
     String prefix = 'Emergency! I need help.',
   }) async {
-    final numbers = contacts
-        .map((c) => c.phone.trim())
-        .where((p) => p.isNotEmpty)
-        .toList(growable: false);
-    if (numbers.isEmpty) return EmergencySmsResult.noPhoneNumbers;
+    // De-duplicate by subscriber, so a contact saved twice in different
+    // formats isn't texted twice — but send the number exactly as saved,
+    // which SmsManager parses correctly.
+    final byRecipient = <String, String>{};
+    for (final c in contacts) {
+      final number = c.phone.trim();
+      if (number.isEmpty) continue;
+      byRecipient.putIfAbsent(phoneDedupeKey(number), () => number);
+    }
+    final numbers = byRecipient.values.toList(growable: false);
+    if (numbers.isEmpty) {
+      return const EmergencySmsOutcome(EmergencySmsResult.noPhoneNumbers);
+    }
 
     if (!Platform.isAndroid && !Platform.isIOS) {
-      return EmergencySmsResult.unsupportedPlatform;
+      return const EmergencySmsOutcome(
+          EmergencySmsResult.unsupportedPlatform, total: 0);
     }
 
     // iOS has no runtime "send SMS" permission — the compose sheet itself is
@@ -43,31 +53,40 @@ class EmergencySmsService {
     if (Platform.isAndroid) {
       final smsPermission = await Permission.sms.request();
       if (!smsPermission.isGranted) {
-        return EmergencySmsResult.permissionDenied;
+        return EmergencySmsOutcome(EmergencySmsResult.permissionDenied,
+            total: numbers.length);
       }
     }
 
     final message = '$prefix ${await _currentLocationText()}';
 
     try {
-      await _native.invokeMethod<void>('sendSms', {
+      final response = await _native.invokeMethod<dynamic>('sendSms', {
         'numbers': numbers,
         'message': message,
       });
-      return EmergencySmsResult.sent;
+      // Android reports per-recipient counts so a partial delivery is visible
+      // instead of being reported as a clean success.
+      final sent = response is Map
+          ? (response['sent'] as int? ?? numbers.length)
+          : numbers.length;
+      return EmergencySmsOutcome(
+        EmergencySmsResult.sent,
+        sent: sent,
+        total: numbers.length,
+      );
     } on PlatformException catch (e) {
-      switch (e.code) {
-        case 'sms_permission_denied':
-          return EmergencySmsResult.permissionDenied;
-        case 'sms_cancelled':
-          return EmergencySmsResult.cancelled;
-        case 'sms_unsupported':
-          return EmergencySmsResult.unsupportedPlatform;
-        default:
-          return EmergencySmsResult.failed;
-      }
+      final result = switch (e.code) {
+        'sms_permission_denied' => EmergencySmsResult.permissionDenied,
+        'sms_cancelled' => EmergencySmsResult.cancelled,
+        'sms_unsupported' => EmergencySmsResult.unsupportedPlatform,
+        'sms_no_telephony' => EmergencySmsResult.noTelephony,
+        _ => EmergencySmsResult.failed,
+      };
+      return EmergencySmsOutcome(result, total: numbers.length);
     } catch (_) {
-      return EmergencySmsResult.failed;
+      return EmergencySmsOutcome(EmergencySmsResult.failed,
+          total: numbers.length);
     }
   }
 
@@ -102,6 +121,14 @@ class EmergencySmsService {
   }
 }
 
+/// Outcome of the SMS fan-out, including how many contacts actually got it.
+class EmergencySmsOutcome {
+  final EmergencySmsResult result;
+  final int sent;
+  final int total;
+  const EmergencySmsOutcome(this.result, {this.sent = 0, this.total = 0});
+}
+
 enum EmergencySmsResult {
   sent,
   noPhoneNumbers,
@@ -109,5 +136,9 @@ enum EmergencySmsResult {
   unsupportedPlatform,
   /// iOS only: the user dismissed the Messages compose sheet without sending.
   cancelled,
+
+  /// The device has no cellular radio — a tethered Wear OS watch or an
+  /// emulator. Nothing can be sent from here, regardless of permissions.
+  noTelephony,
   failed,
 }

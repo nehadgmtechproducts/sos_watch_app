@@ -121,6 +121,8 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
   Future<void> _request(OtpRequested e, Emitter<AuthState> emit) async {
     emit(const AuthLoading());
     try {
+      // Sent as typed: the server normalises to E.164 with libphonenumber,
+      // which handles more input shapes correctly than we can here.
       final body = <String, dynamic>{'phone': e.phone};
       final fcmToken = await PushService.instance.getToken();
       // The backend uses this token to deliver the OTP via FCM. Omit it only

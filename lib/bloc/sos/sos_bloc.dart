@@ -121,7 +121,7 @@ class SosBloc extends Bloc<SosEvent, SosState> {
     final ringResult = online ? await _ringDevices() : const RingResult(RingOutcome.offline);
     // Text each contact our current location, then start the call sequence.
     final smsResult = await _sms.sendLocationToContacts(contacts);
-    final callResult = await _calls.startContactCallAlarmSequence(contacts);
+    final callResult = await _calls.startContactCallSequence(contacts);
     emit(state.copyWith(
       sending: false,
       feedback: _feedback(ringResult, smsResult, callResult),
@@ -151,8 +151,8 @@ class SosBloc extends Bloc<SosEvent, SosState> {
 
   String _feedback(
     RingResult ring,
-    EmergencySmsResult smsResult,
-    EmergencyCallStartResult callResult,
+    EmergencySmsOutcome smsResult,
+    EmergencyCallOutcome callResult,
   ) {
     final broadcastText = switch (ring.outcome) {
       RingOutcome.offline => 'No internet — skipped the alarm alert.',
@@ -161,17 +161,22 @@ class SosBloc extends Bloc<SosEvent, SosState> {
       RingOutcome.delivered when ring.count == 1 => 'Ringing 1 contact\'s device.',
       RingOutcome.delivered => 'Ringing ${ring.count} contacts\' devices.',
     };
-    final smsText = switch (smsResult) {
-      EmergencySmsResult.sent => 'Location SMS sent to contacts.',
+    final smsText = switch (smsResult.result) {
+      EmergencySmsResult.sent when smsResult.sent < smsResult.total =>
+        'Location SMS sent to ${smsResult.sent} of ${smsResult.total} contacts.',
+      EmergencySmsResult.sent =>
+        'Location SMS sent to ${smsResult.total} contact(s).',
       EmergencySmsResult.noPhoneNumbers => 'No contact phone numbers saved.',
       EmergencySmsResult.permissionDenied => 'SMS permission was denied.',
       EmergencySmsResult.unsupportedPlatform => 'This device cannot send SMS.',
       EmergencySmsResult.cancelled => 'SMS was not sent — message cancelled.',
+      EmergencySmsResult.noTelephony =>
+        'This device has no SIM, so it cannot send SMS.',
       EmergencySmsResult.failed => 'Could not send the location SMS.',
     };
-    final callText = switch (callResult) {
+    final callText = switch (callResult.result) {
       EmergencyCallStartResult.started =>
-        'Calling emergency contacts one by one; alarm rings after the call timer.',
+        'Calling ${callResult.contactCount} contact(s), one after another.',
       EmergencyCallStartResult.alreadyRunning =>
         'Emergency calling is already running.',
       EmergencyCallStartResult.noPhoneNumbers =>

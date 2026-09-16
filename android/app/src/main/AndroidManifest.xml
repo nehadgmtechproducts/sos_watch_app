@@ -9,6 +9,9 @@
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
     <uses-permission android:name="android.permission.VIBRATE"/>
     <uses-permission android:name="android.permission.CALL_PHONE"/>
+    <!-- Lets the emergency call sequence detect when one call has ended so the
+         next contact can be dialled instead of guessing with a fixed timer. -->
+    <uses-permission android:name="android.permission.READ_PHONE_STATE"/>
     <!-- Pick emergency contacts from the device's contact list -->
     <uses-permission android:name="android.permission.READ_CONTACTS"/>
     <!-- Send the emergency SMS with location -->
