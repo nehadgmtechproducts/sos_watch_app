@@ -94,9 +94,12 @@ class EmergencySmsService {
   /// denied — the SMS still goes out, just without coordinates.
   Future<String> _currentLocationText() async {
     try {
-      if (!await Geolocator.isLocationServiceEnabled()) {
-        return '(Location services are off.)';
-      }
+      // Deliberately no isLocationServiceEnabled() pre-check: on Wear OS and
+      // other images whose Play Services lacks a fused provider, it throws
+      // ApiException 10 ("Not implemented on this platform") from a Play
+      // Services callback on the main looper — which kills the process instead
+      // of surfacing as a Dart error this try/catch could handle. Location
+      // being off is detected below via LocationServiceDisabledException.
       var permission = await Geolocator.checkPermission();
       if (permission == LocationPermission.denied) {
         permission = await Geolocator.requestPermission();
@@ -107,14 +110,24 @@ class EmergencySmsService {
       }
 
       final pos = await Geolocator.getCurrentPosition(
-        locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.high,
-          timeLimit: Duration(seconds: 10),
-        ),
+        locationSettings: Platform.isAndroid
+            ? AndroidSettings(
+                accuracy: LocationAccuracy.high,
+                timeLimit: const Duration(seconds: 10),
+                // Route through the platform LocationManager rather than the
+                // fused provider, which isn't implemented on every device.
+                forceLocationManager: true,
+              )
+            : const LocationSettings(
+                accuracy: LocationAccuracy.high,
+                timeLimit: Duration(seconds: 10),
+              ),
       );
       final lat = pos.latitude.toStringAsFixed(6);
       final lng = pos.longitude.toStringAsFixed(6);
       return 'My location: https://maps.google.com/?q=$lat,$lng';
+    } on LocationServiceDisabledException {
+      return '(Location services are off.)';
     } catch (_) {
       return '(Current location unavailable.)';
     }

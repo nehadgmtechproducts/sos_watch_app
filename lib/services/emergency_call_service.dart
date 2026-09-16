@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io' show Platform;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 
@@ -26,6 +27,10 @@ class EmergencyCallService {
   static final EmergencyCallService instance = EmergencyCallService._();
 
   static const MethodChannel _native = MethodChannel('sos_emergency/phone');
+
+  /// Grep-able prefix so the call sequence can be followed in logcat:
+  /// `adb logcat | grep SOS-CALL`
+  static const String _logTag = '[SOS-CALL]';
 
   /// Longest we'll stay on one contact before moving to the next. Only applies
   /// when the call never connects or is never hung up — a call that ends
@@ -81,17 +86,29 @@ class EmergencyCallService {
   /// to clear, so contact 2 isn't dialled on top of contact 1's still-active
   /// call — which is why only the first contact used to be reached.
   Future<void> _runSequence(List<DemoContact> contacts) async {
+    debugPrint('$_logTag sequence started — ${contacts.length} contact(s) to call');
     try {
-      for (final contact in contacts) {
+      for (var i = 0; i < contacts.length; i++) {
+        final contact = contacts[i];
+        final position = '${i + 1}/${contacts.length}';
         try {
+          debugPrint('$_logTag [$position] dialling ${contact.name} '
+              '<${contact.phone}>');
           await _placeCall(contact.phone);
-          await _awaitCallEnd();
-        } catch (_) {
+          debugPrint('$_logTag [$position] dialer launched for ${contact.phone}');
+          final ended = await _awaitCallEnd();
+          debugPrint('$_logTag [$position] ${ended ? 'call ended' : 'no call-end '
+              'signal — moving on after timeout'} for ${contact.phone}');
+        } catch (error) {
           // One bad number, a denied/declined call, or a platform error must
           // not stop the rest of the contact list from being tried.
+          debugPrint('$_logTag [$position] FAILED for ${contact.phone}: $error '
+              '— continuing to the next contact');
         }
         await Future<void>.delayed(gapBetweenCalls);
       }
+      debugPrint('$_logTag sequence finished — all ${contacts.length} '
+          'contact(s) attempted');
     } finally {
       _running = false;
     }
@@ -107,7 +124,9 @@ class EmergencyCallService {
 
   /// Waits for the active call to finish. Falls back to a plain timer when the
   /// platform can't report call state (iOS, or READ_PHONE_STATE not granted).
-  Future<void> _awaitCallEnd() async {
+  /// Returns true when the call was observed to end, false when we gave up
+  /// waiting and advanced on the timeout instead.
+  Future<bool> _awaitCallEnd() async {
     if (Platform.isAndroid) {
       try {
         final ended = await _native.invokeMethod<bool>(
@@ -116,12 +135,14 @@ class EmergencyCallService {
         );
         // The native side already blocked for up to `callTimeout`, whether the
         // call ended cleanly or timed out; no further delay needed.
-        if (ended != null) return;
-      } catch (_) {
-        // Fall through to the timer below.
+        if (ended != null) return ended;
+      } catch (error) {
+        debugPrint('$_logTag call-state watch unavailable ($error) — '
+            'falling back to a fixed ${callTimeout.inSeconds}s wait');
       }
     }
     await Future<void>.delayed(callTimeout);
+    return false;
   }
 }
 

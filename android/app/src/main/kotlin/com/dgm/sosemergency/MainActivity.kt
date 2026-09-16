@@ -16,6 +16,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
+import android.util.Log
 import android.telephony.PhoneStateListener
 import android.telephony.SmsManager
 import android.telephony.TelephonyCallback
@@ -39,6 +40,9 @@ class MainActivity : FlutterActivity() {
     private var smsResultReceiver: BroadcastReceiver? = null
 
     private companion object {
+        // Matches the Dart side's "[SOS-CALL]" prefix, so one logcat filter
+        // shows the whole sequence: adb logcat | grep -E "SOS-CALL|SosCall"
+        const val CALL_LOG_TAG = "SosCall"
         const val EXTRA_SMS_RECIPIENT = "sms_recipient"
         const val SMS_RESULT_TIMEOUT_MS = 20_000L
         // Spaces out each recipient's PendingIntent request codes so the parts
@@ -178,10 +182,13 @@ class MainActivity : FlutterActivity() {
                                 Uri.fromParts("tel", phoneNumber, null)
                             ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                             startActivity(intent)
+                            Log.i(CALL_LOG_TAG, "ACTION_CALL dispatched to $phoneNumber")
                             result.success(true)
                         } catch (e: SecurityException) {
+                            Log.e(CALL_LOG_TAG, "CALL_PHONE denied for $phoneNumber", e)
                             result.error("call_permission_denied", "CALL_PHONE permission denied.", null)
                         } catch (e: Exception) {
+                            Log.e(CALL_LOG_TAG, "Could not dial $phoneNumber", e)
                             result.error("call_failed", e.message, null)
                         }
                     }
@@ -354,6 +361,11 @@ class MainActivity : FlutterActivity() {
             if (!finished.compareAndSet(false, true)) return
             onTimeout?.let { handler.removeCallbacks(it) }
             stopListeningToCallState(telephony)
+            Log.i(
+                CALL_LOG_TAG,
+                if (ended) "Call ended — ready for the next contact"
+                else "No call-end seen within ${timeoutMs}ms — advancing anyway",
+            )
             result.success(ended)
         }
 

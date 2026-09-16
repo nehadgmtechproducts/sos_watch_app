@@ -3,6 +3,7 @@ import 'dart:io' show Platform;
 
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/widgets.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -27,12 +28,24 @@ const _otpNotificationDetails = NotificationDetails(
   ),
 );
 
+/// Echoes a received OTP to the log so it can be read during testing without a
+/// second handset: `adb logcat | grep SOS-OTP`.
+///
+/// Guarded by [kDebugMode] on purpose — a one-time passcode is a credential,
+/// and it must never be written to the log of a release build.
+void logOtp(String source, String? otp) {
+  if (!kDebugMode) return;
+  debugPrint('[SOS-OTP] ($source) ${otp == null || otp.isEmpty ? '(none in '
+      'payload — read it from the notification)' : otp}');
+}
+
 Future<void> _showOtpNotification(
   FlutterLocalNotificationsPlugin plugin,
   RemoteMessage message,
 ) async {
   final notification = message.notification;
   final otp = message.data['otp']?.toString().trim();
+  logOtp('push', otp);
   await plugin.show(
     id: 100,
     title: notification?.title ?? 'SOS Emergency verification code',
@@ -63,6 +76,10 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   );
 
   if (message.data['type'] == 'otp') {
+    // Logged here as well as in _showOtpNotification: the backend sends OTPs
+    // with a notification block, so the early return below means that helper
+    // never runs for a backgrounded app.
+    logOtp('push/background', message.data['otp']?.toString().trim());
     // FCM already renders notification-payload messages in the background.
     // Data-only OTPs need a local notification so both message formats work
     // without creating duplicate notifications.

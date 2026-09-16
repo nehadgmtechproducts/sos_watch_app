@@ -134,7 +134,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
       // devOtp is only present in dev mode; the real OTP arrives via FCM push.
       // Read it null-safely so a missing value can't throw and block OtpSent.
       final devOtp = r['devOtp'] as String?;
-      if (devOtp != null) print('otp===$devOtp');
+      if (devOtp != null) logOtp('api/devOtp', devOtp);
       emit(OtpSent(_requestId!));
     } on ApiException catch (e) {
       emit(AuthFailure(e.message));
