@@ -1,4 +1,5 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- SOS demo permissions -->
     <uses-permission android:name="android.permission.INTERNET"/>
@@ -61,6 +62,22 @@
         </activity>
 
         <!-- Home-screen SOS button widget -->
+        <!-- Our subclass of the firebase_messaging plugin's service, which
+             raises alarm volume natively the instant a ring push arrives —
+             even with the app closed. The plugin's own declaration is removed
+             so exactly one service handles MESSAGING_EVENT; two would make
+             delivery order undefined. -->
+        <service
+            android:name="io.flutter.plugins.firebase.messaging.FlutterFirebaseMessagingService"
+            tools:node="remove" />
+        <service
+            android:name=".SosMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+
         <receiver android:name=".SosWidgetProvider" android:exported="true">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE"/>

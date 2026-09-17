@@ -113,13 +113,23 @@ class _EnterOtpScreenState extends State<EnterOtpScreen> {
           }
           if (!context.mounted) return;
           context.read<ContactsBloc>().add(const ContactsStarted());
-          Navigator.of(context).pushReplacement(MaterialPageRoute(
-            // The API identifies returning users, while the local check also
-            // handles a completed profile saved during this app session.
-            builder: (_) => !state.isNewUser || hasCompletedProfile
-                ? const HomeScreen()
-                : EnterUserDetailsScreen(phoneNumber: widget.phoneNumber),
-          ));
+          // The API identifies returning users, while the local check also
+          // handles a completed profile saved during this app session.
+          final goHome = !state.isNewUser || hasCompletedProfile;
+          if (goHome) {
+            // Clear the stack, so the login screens aren't left underneath
+            // Home — otherwise Back from Home, or anything that unwinds the
+            // stack, lands a signed-in user on the login screen.
+            Navigator.of(context).pushAndRemoveUntil(
+              MaterialPageRoute(builder: (_) => const HomeScreen()),
+              (_) => false,
+            );
+          } else {
+            Navigator.of(context).pushReplacement(MaterialPageRoute(
+              builder: (_) =>
+                  EnterUserDetailsScreen(phoneNumber: widget.phoneNumber),
+            ));
+          }
         }
         if (state is AuthFailure) {
           ScaffoldMessenger.of(context)

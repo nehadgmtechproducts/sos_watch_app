@@ -1,4 +1,5 @@
 import 'package:equatable/equatable.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../services/api_service.dart';
 import '../../services/profile_store.dart';
@@ -65,6 +66,10 @@ class AuthFailure extends AuthState {
   List<Object?> get props => [message];
 }
 
+/// Grep-able prefix for device registration: `adb logcat | grep SOS-REG`.
+/// A device that never logs a successful registration cannot be rung.
+const regLogTag = '[SOS-REG]';
+
 class AuthBloc extends Bloc<AuthEvent, AuthState> {
   AuthBloc(this.api) : super(const AuthInitial()) {
     on<AuthSessionCleared>((event, emit) {
@@ -84,13 +89,27 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
   /// can ring it. Best-effort: a failure just means this device isn't a ring
   /// target yet; it does not block sign-in.
   Future<void> registerDevice() async {
-    if (api.token == null) return;
+    if (api.token == null) {
+      debugPrint('$regLogTag NOT registered: no session token — this device '
+          'cannot receive SOS rings until sign-in completes');
+      return;
+    }
     final fcmToken = await PushService.instance.getToken();
-    if (fcmToken == null) return;
+    if (fcmToken == null) {
+      debugPrint('$regLogTag NOT registered: no FCM token available — check '
+          'Google Play services on this device');
+      return;
+    }
     try {
       await api.request('POST', '/devices/register',
           body: {'fcmToken': fcmToken, 'platform': PushService.instance.platform});
-    } catch (_) {/* non-fatal */}
+      debugPrint('$regLogTag registered as a ring target, token='
+          '…${fcmToken.substring(fcmToken.length - 12)}');
+    } catch (e) {
+      // Non-fatal for sign-in, but it does mean no SOS ring can reach here.
+      debugPrint('$regLogTag registration FAILED ($e) — this device will not '
+          'receive SOS rings');
+    }
   }
 
   Future<void> logout() async {

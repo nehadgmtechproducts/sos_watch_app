@@ -12,12 +12,15 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 ///  * **Ringer silent/vibrate** — audio is played with
 ///    [AudioContextAndroid.usageType] = `alarm`, routing it to STREAM_ALARM,
 ///    which the ringer's silent/vibrate mode does NOT mute.
-///  * **Low / zero alarm volume** — the native `maxAlarmVolume` method forces
+///  * **Low / zero alarm volume** — the native `raiseAlarm` method forces
 ///    STREAM_ALARM to its maximum (`AudioManager.setStreamVolume`).
 ///  * **Do-Not-Disturb / Focus** — if the user granted notification-policy
-///    access, `disableDnd` turns DND off for the duration of the alarm.
+///    access, `raiseAlarm` also turns DND off for the duration of the alarm.
 ///
-/// All of the original settings are restored in [stop].
+/// Both are done by the native `AlarmVolumeGuard`, which is shared with
+/// `SosMessagingService`: when the app is closed, that service raises the
+/// volume the moment the push arrives, before this class ever runs. The guard
+/// remembers the user's true original settings, which [stop] restores.
 ///
 /// On iOS, true silent-switch override additionally needs the Critical Alerts
 /// entitlement (see docs/IOS_CRITICAL_ALERTS.md).
@@ -29,8 +32,6 @@ class AlarmService {
 
   final AudioPlayer _player = AudioPlayer();
   bool _ringing = false;
-  int? _previousAlarmVolume;
-  int? _previousDndFilter;
 
   bool get isRinging => _ringing;
 
@@ -59,15 +60,11 @@ class AlarmService {
     await WakelockPlus.enable();
 
     if (Platform.isAndroid) {
-      // Force the ALARM stream to max so a low/zero alarm volume can't quiet us.
+      // Force the ALARM stream to max and lift DND, so a low/zero alarm volume
+      // or Do-Not-Disturb can't quiet us. Idempotent: the push service may have
+      // already raised it, and the guard keeps the original either way.
       try {
-        _previousAlarmVolume =
-            await _native.invokeMethod<int>('maxAlarmVolume');
-      } catch (_) {}
-      // If allowed, turn Do-Not-Disturb off for the duration of the alarm.
-      try {
-        final prev = await _native.invokeMethod<int>('disableDnd');
-        if (prev != null && prev > 0) _previousDndFilter = prev;
+        await _native.invokeMethod('raiseAlarm');
       } catch (_) {}
     }
 
@@ -102,28 +99,20 @@ class AlarmService {
   }
 
   Future<void> stop() async {
-    if (!_ringing) return;
-    _ringing = false;
+    if (_ringing) {
+      _ringing = false;
+      await _player.stop();
+      Vibration.cancel();
+      await WakelockPlus.disable();
+    }
 
-    await _player.stop();
-    Vibration.cancel();
-    await WakelockPlus.disable();
-
+    // Restore even when the in-app siren never started: with the app closed,
+    // the push service raised the volume on its own, and this is the only
+    // place it gets put back. The guard is a no-op if nothing was raised.
     if (Platform.isAndroid) {
-      if (_previousAlarmVolume != null) {
-        try {
-          await _native.invokeMethod(
-              'restoreAlarmVolume', {'volume': _previousAlarmVolume});
-        } catch (_) {}
-        _previousAlarmVolume = null;
-      }
-      if (_previousDndFilter != null) {
-        try {
-          await _native
-              .invokeMethod('restoreDnd', {'filter': _previousDndFilter});
-        } catch (_) {}
-        _previousDndFilter = null;
-      }
+      try {
+        await _native.invokeMethod('restoreAlarm');
+      } catch (_) {}
     }
   }
 }

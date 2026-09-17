@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io' show Platform;
+import 'dart:typed_data';
 
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -8,8 +10,63 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'alarm_service.dart';
+
+/// Same id NotificationService uses, so the in-app alarm replaces this
+/// notification and its Stop button cancels it.
+const _sosNotificationId = 42;
+
 /// Prefs key: a ring recorded by the background isolate, awaiting UI delivery.
-const _pendingRingKey = 'pending_ring_from';
+/// Stores JSON ({from, at}) — the v1 key held a bare name with no timestamp.
+const _pendingRingKey = 'pending_ring_v2';
+const _legacyPendingRingKey = 'pending_ring_from';
+
+/// How recent a stored ring must be to still be worth raising.
+///
+/// Without this, a ring recorded while the app was killed sat in prefs forever
+/// and fired at the next resume, whenever that happened to be. That misfires
+/// worst on the *sender's* own phone: pressing SOS launches the dialer, which
+/// backgrounds the app, so coming back from the call replays whatever old ring
+/// was still sitting there — looking exactly like "my own phone alarmed".
+///
+/// Long enough to cover a receiver who reacts to the ringing notification a few
+/// minutes late — they must still get the alarm screen and its Stop button —
+/// while still rejecting leftovers from hours or days ago.
+const _pendingRingMaxAge = Duration(minutes: 10);
+
+/// Grep-able prefix for the whole ring path: `adb logcat | grep SOS-RING`.
+const ringLogTag = '[SOS-RING]';
+
+/// The siren, as an Android raw resource (android/app/src/main/res/raw).
+/// The Flutter asset can't be used here: a notification channel's sound is
+/// played by the system, which has no access to Flutter's asset bundle.
+const _sirenSound = RawResourceAndroidNotificationSound('siren');
+
+final Int64List sosVibrationPattern =
+    Int64List.fromList(<int>[0, 800, 400, 800, 400, 800]);
+
+/// Channel for a ring that arrives while the app is **not** in the foreground.
+///
+/// The system plays this sound itself, which matters because the background
+/// isolate cannot drive AlarmService — that lives in the UI isolate, which is
+/// not running. Routing it through [AudioAttributesUsage.alarm] puts it on
+/// STREAM_ALARM, so ringer-silent does not mute it, exactly as an alarm clock
+/// stays audible.
+///
+/// A new id on purpose: channel settings are immutable once created, so devices
+/// that already have the old silent `sos_alarm_channel` would otherwise keep
+/// playing nothing forever.
+final loudSosChannel = AndroidNotificationChannel(
+  'sos_alarm_loud_v1',
+  'SOS Emergency Alarm',
+  description: 'Full-screen emergency alerts from your linked contacts.',
+  importance: Importance.max,
+  playSound: true,
+  sound: _sirenSound,
+  audioAttributesUsage: AudioAttributesUsage.alarm,
+  enableVibration: true,
+  vibrationPattern: sosVibrationPattern,
+);
 
 const _otpChannel = AndroidNotificationChannel(
   'otp_notifications',
@@ -98,41 +155,48 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   final fromName = from == null || from.isEmpty ? 'A contact' : from;
   // Record a pending ring so the foreground UI starts the siren + alarm screen
   // when it next resumes (this background isolate can't touch the AlarmBloc).
+  debugPrint('$ringLogTag received ring push (background isolate) from '
+      '$fromName');
   try {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_pendingRingKey, fromName);
+    await prefs.setString(
+      _pendingRingKey,
+      jsonEncode({
+        'from': fromName,
+        'at': DateTime.now().millisecondsSinceEpoch,
+      }),
+    );
   } catch (_) {}
   // This isolate may be the app's first run, so the channel might not exist yet.
   // Creating a channel is idempotent, so this is safe to repeat.
   await plugin
       .resolvePlatformSpecificImplementation<
           AndroidFlutterLocalNotificationsPlugin>()
-      ?.createNotificationChannel(const AndroidNotificationChannel(
-        'sos_alarm_channel',
-        'SOS Emergency Alarm',
-        description: 'Full-screen emergency alerts from your linked contacts.',
-        importance: Importance.max,
-        playSound: false,
-        enableVibration: false,
-      ));
+      ?.createNotificationChannel(loudSosChannel);
   await plugin.show(
-    id: 42,
+    id: _sosNotificationId,
     title: '🚨 EMERGENCY',
     body: '$fromName needs help — tap to open',
-    notificationDetails: const NotificationDetails(
+    notificationDetails: NotificationDetails(
       android: AndroidNotificationDetails(
-        'sos_alarm_channel',
-        'SOS Emergency Alarm',
-        channelDescription: 'Full-screen emergency alerts from your linked contacts.',
+        loudSosChannel.id,
+        loudSosChannel.name,
+        channelDescription: loudSosChannel.description,
         importance: Importance.max,
         priority: Priority.high,
         category: AndroidNotificationCategory.alarm,
         fullScreenIntent: true,
         ongoing: true,
         autoCancel: false,
-        playSound: false,
-        enableVibration: false,
+        playSound: true,
+        sound: _sirenSound,
+        audioAttributesUsage: AudioAttributesUsage.alarm,
+        enableVibration: true,
+        vibrationPattern: sosVibrationPattern,
         visibility: NotificationVisibility.public,
+        // FLAG_INSISTENT: repeat the sound until the notification is cancelled.
+        // A channel sound otherwise plays once, which is not an alarm.
+        additionalFlags: Int32List.fromList(<int>[4]),
       ),
     ),
     payload: 'sos',
@@ -235,9 +299,11 @@ class PushService {
   }
 
   void _onForegroundMessage(RemoteMessage message) {
-    switch (message.data['type']) {
+    final type = message.data['type'];
+    debugPrint('$ringLogTag foreground push received, type=$type');
+    switch (type) {
       case 'ring':
-        _emitRing(message);
+        _emitRing(message, 'foreground push');
         break;
       case 'otp':
         _showOtpNotification(_notifications, message);
@@ -246,25 +312,62 @@ class PushService {
   }
 
   void _onRingOpened(RemoteMessage message) {
-    if (message.data['type'] == 'ring') _emitRing(message);
+    if (message.data['type'] == 'ring') {
+      _emitRing(message, 'notification tap');
+    }
   }
 
-  void _emitRing(RemoteMessage message) {
+  void _emitRing(RemoteMessage message, String source) {
     final from = (message.data['fromName'] as String?)?.trim();
-    _ring.add(from == null || from.isEmpty ? 'A contact' : from);
+    final fromName = from == null || from.isEmpty ? 'A contact' : from;
+    debugPrint('$ringLogTag raising alarm — ring from $fromName (via $source)');
+    _ring.add(fromName);
   }
 
   /// Delivers a ring recorded by [firebaseMessagingBackgroundHandler] while the
   /// app was backgrounded/terminated. Call once the UI + AlarmBloc are ready
   /// (app start) and again on resume; safe to call when nothing is pending.
+  ///
+  /// Anything older than [_pendingRingMaxAge] is discarded rather than raised —
+  /// an emergency that arrived long ago is not an emergency happening now.
   Future<void> deliverPendingRing() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final from = prefs.getString(_pendingRingKey);
-      if (from == null) return;
+      // Values written before rings carried a timestamp can't be aged, and are
+      // exactly the stale entries causing spurious alarms — drop them.
+      if (prefs.containsKey(_legacyPendingRingKey)) {
+        await prefs.remove(_legacyPendingRingKey);
+        debugPrint('$ringLogTag discarded a legacy pending ring (no timestamp)');
+      }
+
+      final raw = prefs.getString(_pendingRingKey);
+      if (raw == null) return;
       await prefs.remove(_pendingRingKey);
+
+      final stored = jsonDecode(raw) as Map<String, dynamic>;
+      final from = stored['from'] as String? ?? 'A contact';
+      final at = stored['at'] as int? ?? 0;
+      final age = DateTime.now().millisecondsSinceEpoch - at;
+
+      if (age > _pendingRingMaxAge.inMilliseconds) {
+        debugPrint('$ringLogTag discarded stale pending ring from $from '
+            '(${(age / 1000).round()}s old)');
+        // The background notification rings until cancelled, and no alarm
+        // screen (with its Stop button) will open for a discarded ring — so
+        // silence it and put the volume back here, or it would ring on with
+        // no way to stop it. Skipped if a live alarm is already sounding.
+        if (!AlarmService.instance.isRinging) {
+          await _notifications.cancel(id: _sosNotificationId);
+          await AlarmService.instance.stop();
+        }
+        return;
+      }
+      debugPrint('$ringLogTag raising alarm — pending ring from $from '
+          '(${(age / 1000).round()}s old)');
       _ring.add(from);
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('$ringLogTag could not read pending ring: $e');
+    }
   }
 
   /// Prints the token inside a clear banner so it's easy to find/copy from

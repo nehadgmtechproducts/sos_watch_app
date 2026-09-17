@@ -15,7 +15,11 @@ import 'onboarding_common.dart';
 /// Reads the device's real contacts, lets the user pick one or more emergency
 /// contacts, and saves them.
 class ChooseContactsScreen extends StatefulWidget {
-  const ChooseContactsScreen({super.key});
+  /// See [AddContactScreen.onboarding]: false returns to the contacts list
+  /// after saving, instead of continuing the sign-up flow.
+  final bool onboarding;
+
+  const ChooseContactsScreen({super.key, this.onboarding = true});
 
   @override
   State<ChooseContactsScreen> createState() => _ChooseContactsScreenState();
@@ -93,6 +97,10 @@ class _ChooseContactsScreenState extends State<ChooseContactsScreen> {
           );
     }
     if (!mounted) return;
+    if (!widget.onboarding) {
+      Navigator.of(context).pop(true);
+      return;
+    }
     Navigator.of(context).pushReplacement(
       MaterialPageRoute(builder: (_) => const ContactsAddedScreen()),
     );

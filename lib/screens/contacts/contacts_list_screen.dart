@@ -6,7 +6,7 @@ import '../../services/contacts_store.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/app_styles.dart';
 import 'contact_detail_screen.dart';
-import '../onboarding/add_contact_screen.dart';
+import '../onboarding/emergency_contacts_screen.dart';
 
 /// Screen 8 — Contacts List (Show Contacts).
 class ContactsListScreen extends StatelessWidget {
@@ -104,9 +104,12 @@ class ContactsListScreen extends StatelessWidget {
                     tooltip: 'Add contact',
                     icon: const Icon(Icons.person_add_alt_1_rounded,
                         color: AppColors.accent, size: 20),
+                    // Offer both ways to add — from the phone's contacts or
+                    // manually — and come back to this list afterwards.
                     onPressed: () => Navigator.of(context).push(
                       MaterialPageRoute(
-                          builder: (_) => const AddContactScreen()),
+                          builder: (_) =>
+                              const EmergencyContactsScreen(onboarding: false)),
                     ),
                   ),
                 ],

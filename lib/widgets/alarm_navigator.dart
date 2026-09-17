@@ -43,7 +43,12 @@ class _AlarmNavigatorState extends State<AlarmNavigator> {
               .then((_) => _routeOpen = false);
         } else if (!state.ringing && _routeOpen) {
           _routeOpen = false;
-          nav.popUntil((r) => r.isFirst);
+          // Pop only the alarm screen and stop at whatever was under it. This
+          // used to be `popUntil((r) => r.isFirst)`, which unwound the whole
+          // stack — and for a user who signed in via the OTP screen, the first
+          // route is the login screen, so stopping an alarm looked exactly
+          // like being logged out.
+          nav.popUntil((r) => r.settings.name != AlarmScreen.routeName);
         }
       },
       child: widget.child,

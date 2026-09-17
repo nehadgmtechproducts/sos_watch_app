@@ -42,13 +42,22 @@ class _SplashScreenState extends State<SplashScreen> {
       auth.registerDevice(); // refresh this phone as a ring target
       context.read<ContactsBloc>().add(const ContactsStarted());
     }
-    Navigator.of(context).pushReplacement(
-      MaterialPageRoute(
-        builder: (_) => isLoggedIn && hasCompletedProfile
-            ? const HomeScreen()
-            : const EnterMobileScreen(),
-      ),
+    // Replace *this* route specifically, not whatever is on top. When the app
+    // is opened by tapping an SOS notification, the alarm screen is pushed over
+    // the splash within the first frame; pushReplacement acts on the topmost
+    // route, so 3s later it swapped out the alarm screen — leaving the siren
+    // ringing with no Stop button. This lands Home beneath the alarm instead.
+    final splashRoute = ModalRoute.of(context);
+    final next = MaterialPageRoute<void>(
+      builder: (_) => isLoggedIn && hasCompletedProfile
+          ? const HomeScreen()
+          : const EnterMobileScreen(),
     );
+    if (splashRoute != null && splashRoute.isActive) {
+      Navigator.of(context).replace(oldRoute: splashRoute, newRoute: next);
+    } else {
+      Navigator.of(context).pushReplacement(next);
+    }
   }
 
   @override

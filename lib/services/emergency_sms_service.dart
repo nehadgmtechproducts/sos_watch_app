@@ -1,5 +1,6 @@
 import 'dart:io' show Platform;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -25,6 +26,9 @@ class EmergencySmsService {
 
   static const MethodChannel _native = MethodChannel('sos_emergency/sms');
 
+  /// Grep-able prefix for the SMS path: `adb logcat | grep -E "SOS-SMS|SosSms"`.
+  static const String _logTag = '[SOS-SMS]';
+
   Future<EmergencySmsOutcome> sendLocationToContacts(
     List<DemoContact> contacts, {
     String prefix = 'Emergency! I need help.',
@@ -39,7 +43,10 @@ class EmergencySmsService {
       byRecipient.putIfAbsent(phoneDedupeKey(number), () => number);
     }
     final numbers = byRecipient.values.toList(growable: false);
+    debugPrint('$_logTag ${contacts.length} contact(s) → ${numbers.length} '
+        'recipient(s): ${numbers.join(', ')}');
     if (numbers.isEmpty) {
+      debugPrint('$_logTag stopped: no phone numbers to text');
       return const EmergencySmsOutcome(EmergencySmsResult.noPhoneNumbers);
     }
 
@@ -52,15 +59,20 @@ class EmergencySmsService {
     // the user's consent, so only Android needs the SEND_SMS permission check.
     if (Platform.isAndroid) {
       final smsPermission = await Permission.sms.request();
+      debugPrint('$_logTag SEND_SMS permission: $smsPermission');
       if (!smsPermission.isGranted) {
+        debugPrint('$_logTag stopped: SMS permission not granted');
         return EmergencySmsOutcome(EmergencySmsResult.permissionDenied,
             total: numbers.length);
       }
     }
 
-    final message = '$prefix ${await _currentLocationText()}';
+    final location = await _currentLocationText();
+    debugPrint('$_logTag location line: $location');
+    final message = '$prefix $location';
 
     try {
+      debugPrint('$_logTag handing ${numbers.length} recipient(s) to SmsManager');
       final response = await _native.invokeMethod<dynamic>('sendSms', {
         'numbers': numbers,
         'message': message,
@@ -70,12 +82,15 @@ class EmergencySmsService {
       final sent = response is Map
           ? (response['sent'] as int? ?? numbers.length)
           : numbers.length;
+      debugPrint('$_logTag result: network accepted $sent of '
+          '${numbers.length} (raw: $response)');
       return EmergencySmsOutcome(
         EmergencySmsResult.sent,
         sent: sent,
         total: numbers.length,
       );
     } on PlatformException catch (e) {
+      debugPrint('$_logTag FAILED: code=${e.code} message=${e.message}');
       final result = switch (e.code) {
         'sms_permission_denied' => EmergencySmsResult.permissionDenied,
         'sms_cancelled' => EmergencySmsResult.cancelled,
@@ -84,7 +99,8 @@ class EmergencySmsService {
         _ => EmergencySmsResult.failed,
       };
       return EmergencySmsOutcome(result, total: numbers.length);
-    } catch (_) {
+    } catch (e) {
+      debugPrint('$_logTag FAILED unexpectedly: $e');
       return EmergencySmsOutcome(EmergencySmsResult.failed,
           total: numbers.length);
     }

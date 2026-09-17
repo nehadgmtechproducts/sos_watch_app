@@ -59,6 +59,9 @@ dependencies {
     // versions on the individual Firebase dependencies below.
     implementation(platform("com.google.firebase:firebase-bom:34.15.0"))
     implementation("com.google.firebase:firebase-analytics")
-    // Add other Firebase products here as needed, e.g. Cloud Messaging:
-    // implementation("com.google.firebase:firebase-messaging")
+    // Needed on the app's own compile classpath for SosMessagingService, which
+    // subclasses the firebase_messaging plugin's service. The plugin only
+    // declares it as a private `implementation`, so it isn't visible here
+    // otherwise. Same BoM (34.15.0) as the plugins, so no version conflict.
+    implementation("com.google.firebase:firebase-messaging")
 }

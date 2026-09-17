@@ -80,10 +80,19 @@ class ContactsBloc extends Bloc<ContactsEvent, ContactsState> {
   ContactsBloc(this._api, this._store) : super(const ContactsState()) {
     on<ContactsCleared>((event, emit) => emit(const ContactsState(loading: false)));
     on<ContactsStarted>(_onStarted);
-    on<ContactAdded>(_onAdded);
-    on<ContactRemoved>(_onRemoved);
-    on<ContactUpdated>(_onUpdated);
+    // Mutations run one at a time. Bloc's default is concurrent, and each of
+    // these reads `state.contacts`, awaits the local save, *then* emits — so
+    // picking several contacts at once let every handler read the same old list
+    // and the last emit overwrote the others, silently dropping contacts from
+    // the store the SOS reads its SMS/call recipients from.
+    on<ContactAdded>(_onAdded, transformer: _sequential());
+    on<ContactRemoved>(_onRemoved, transformer: _sequential());
+    on<ContactUpdated>(_onUpdated, transformer: _sequential());
   }
+
+  /// Processes events strictly in order (bloc_concurrency's `sequential`).
+  static EventTransformer<E> _sequential<E>() =>
+      (events, mapper) => events.asyncExpand(mapper);
 
   Future<void> _onStarted(
       ContactsStarted e, Emitter<ContactsState> emit) async {

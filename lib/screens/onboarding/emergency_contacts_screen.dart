@@ -6,25 +6,33 @@ import '../../theme/app_styles.dart';
 import 'add_contact_screen.dart';
 import 'choose_contacts_screen.dart';
 
-/// Onboarding screen 4 — Emergency Contacts (round smartwatch).
+/// Emergency Contacts chooser (round smartwatch).
 ///
 /// Offers two ways to add contacts: pick from the phone's contacts, or add
-/// manually. UI only — the two options currently route to placeholders (the
-/// "Choose from Contacts" and "Add Manually" screens come next).
+/// manually. Used both as onboarding screen 4 and from the contacts list.
 class EmergencyContactsScreen extends StatelessWidget {
-  const EmergencyContactsScreen({super.key});
+  /// True during sign-up (the default). False when opened from the contacts
+  /// list: the chosen screen returns here after saving, and this screen then
+  /// closes too, so the user ends up back on their list.
+  final bool onboarding;
 
-  void _chooseFromContacts(BuildContext context) {
-    Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const ChooseContactsScreen()),
+  const EmergencyContactsScreen({super.key, this.onboarding = true});
+
+  Future<void> _open(BuildContext context, Widget screen) async {
+    final saved = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(builder: (_) => screen),
     );
+    // Onboarding screens navigate onward themselves and never pop a result.
+    if (!onboarding && saved == true && context.mounted) {
+      Navigator.of(context).pop(true);
+    }
   }
 
-  void _addManually(BuildContext context) {
-    Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const AddContactScreen()),
-    );
-  }
+  void _chooseFromContacts(BuildContext context) =>
+      _open(context, ChooseContactsScreen(onboarding: onboarding));
+
+  void _addManually(BuildContext context) =>
+      _open(context, AddContactScreen(onboarding: onboarding));
 
   @override
   Widget build(BuildContext context) {
@@ -56,12 +64,16 @@ class EmergencyContactsScreen extends StatelessWidget {
               label: 'Add Manually',
               onTap: () => _addManually(context),
             ),
-            const SizedBox(height: 12),
-            const Text(
-              'Minimum 1 contact\nis required',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: AppColors.accent, fontSize: 10, height: 1.3),
-            ),
+            // A sign-up requirement; meaningless when adding to an existing list.
+            if (onboarding) ...[
+              const SizedBox(height: 12),
+              const Text(
+                'Minimum 1 contact\nis required',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                    color: AppColors.accent, fontSize: 10, height: 1.3),
+              ),
+            ],
           ],
         ),
       ),

@@ -14,7 +14,13 @@ import 'onboarding_common.dart';
 ///
 /// A small form to add a single emergency contact by name + mobile number.
 class AddContactScreen extends StatefulWidget {
-  const AddContactScreen({super.key});
+  /// True during sign-up: a successful save continues to the "Contacts Added"
+  /// screen, which then resets the app to Home. False when opened from the
+  /// contacts list: the save simply pops back (with `true`) so the user lands on
+  /// their list again instead of being thrown out to Home.
+  final bool onboarding;
+
+  const AddContactScreen({super.key, this.onboarding = true});
 
   @override
   State<AddContactScreen> createState() => _AddContactScreenState();
@@ -70,6 +76,10 @@ class _AddContactScreenState extends State<AddContactScreen> {
           setState(() => _saving = false);
           ScaffoldMessenger.of(context)
               .showSnackBar(SnackBar(content: Text(state.error!)));
+          return;
+        }
+        if (!widget.onboarding) {
+          Navigator.of(context).pop(true);
           return;
         }
         Navigator.of(context).pushReplacement(

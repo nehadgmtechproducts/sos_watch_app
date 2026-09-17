@@ -43,6 +43,7 @@ class MainActivity : FlutterActivity() {
         // Matches the Dart side's "[SOS-CALL]" prefix, so one logcat filter
         // shows the whole sequence: adb logcat | grep -E "SOS-CALL|SosCall"
         const val CALL_LOG_TAG = "SosCall"
+        const val SMS_LOG_TAG = "SosSms"
         const val EXTRA_SMS_RECIPIENT = "sms_recipient"
         const val SMS_RESULT_TIMEOUT_MS = 20_000L
         // Spaces out each recipient's PendingIntent request codes so the parts
@@ -106,50 +107,22 @@ class MainActivity : FlutterActivity() {
         // Do-Not-Disturb settings.
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "sos_emergency/alarm")
             .setMethodCallHandler { call, result ->
-                val audio = applicationContext
-                    .getSystemService(Context.AUDIO_SERVICE) as AudioManager
                 val nm = applicationContext
                     .getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                 val hasDndAccess = Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
                     nm.isNotificationPolicyAccessGranted
                 when (call.method) {
-                    // Max out the ALARM stream; returns the previous level to restore.
-                    "maxAlarmVolume" -> {
-                        val prev = audio.getStreamVolume(AudioManager.STREAM_ALARM)
-                        val max = audio.getStreamMaxVolume(AudioManager.STREAM_ALARM)
-                        try {
-                            audio.setStreamVolume(AudioManager.STREAM_ALARM, max, 0)
-                        } catch (e: SecurityException) {
-                            // DND is active and we lack policy access — ignore.
-                        }
-                        result.success(prev)
-                    }
-                    "restoreAlarmVolume" -> {
-                        val v = call.argument<Int>("volume")
-                        if (v != null) {
-                            try {
-                                audio.setStreamVolume(AudioManager.STREAM_ALARM, v, 0)
-                            } catch (e: SecurityException) { }
-                        }
+                    // Max the ALARM stream and lift DND. Delegates to the guard
+                    // shared with SosMessagingService, which may already have
+                    // raised it when the push arrived — the guard keeps the
+                    // user's true original rather than recording "max".
+                    "raiseAlarm" -> {
+                        AlarmVolumeGuard.raise(this)
                         result.success(true)
                     }
-                    // Turn Do-Not-Disturb off for the emergency (needs access);
-                    // returns the previous interruption filter to restore.
-                    "disableDnd" -> {
-                        if (hasDndAccess && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                            val prevFilter = nm.currentInterruptionFilter
-                            nm.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_ALL)
-                            result.success(prevFilter)
-                        } else {
-                            result.success(-1)
-                        }
-                    }
-                    "restoreDnd" -> {
-                        val f = call.argument<Int>("filter") ?: -1
-                        if (f > 0 && hasDndAccess &&
-                            Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                            nm.setInterruptionFilter(f)
-                        }
+                    // Put the original volume and DND back.
+                    "restoreAlarm" -> {
+                        AlarmVolumeGuard.restore(this)
                         result.success(true)
                     }
                     "isDndAccessGranted" -> result.success(hasDndAccess)
@@ -237,14 +210,18 @@ class MainActivity : FlutterActivity() {
         message: String,
         result: MethodChannel.Result,
     ) {
-        // A tethered Wear OS watch or an emulator has no cellular radio at all;
-        // say so plainly instead of reporting a send that cannot happen.
-        val messagingFeature = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            PackageManager.FEATURE_TELEPHONY_MESSAGING
-        } else {
-            @Suppress("DEPRECATION") PackageManager.FEATURE_TELEPHONY
-        }
-        if (!packageManager.hasSystemFeature(messagingFeature)) {
+        // A tethered Wear OS watch has no cellular radio at all; say so plainly
+        // instead of reporting a send that cannot happen.
+        //
+        // Must be FEATURE_TELEPHONY, not FEATURE_TELEPHONY_MESSAGING. The
+        // messaging sub-feature only exists from API 33, and phones *upgraded*
+        // to 13 aren't required to declare it — e.g. a Realme RMX3392 (shipped
+        // on API 31, now 33) reports telephony=true but messaging=false. Checking
+        // the sub-feature misreported that working phone as having no SIM and
+        // skipped every SMS. FEATURE_TELEPHONY is declared by any device with a
+        // cellular radio, on every API level.
+        if (!packageManager.hasSystemFeature(PackageManager.FEATURE_TELEPHONY)) {
+            Log.w(SMS_LOG_TAG, "No FEATURE_TELEPHONY on this device — not sending")
             result.error(
                 "sms_no_telephony",
                 "This device has no cellular radio, so it cannot send SMS.",
@@ -263,9 +240,13 @@ class MainActivity : FlutterActivity() {
         val expected = numbers.size * parts.size
         val outcomes = AtomicInteger(0)
         val failedRecipients = Collections.synchronizedSet(mutableSetOf<Int>())
+        // Parts the network confirmed, per recipient. A recipient only counts as
+        // sent once *every* part is confirmed — never merely for not failing.
+        val confirmedParts = IntArray(numbers.size)
         val replied = AtomicBoolean(false)
         val handler = Handler(Looper.getMainLooper())
         var onTimeout: Runnable? = null
+        Log.i(SMS_LOG_TAG, "Sending to ${numbers.size} recipient(s), ${parts.size} part(s) each")
 
         fun releaseReceiver() {
             onTimeout?.let { handler.removeCallbacks(it) }
@@ -275,25 +256,53 @@ class MainActivity : FlutterActivity() {
             smsResultReceiver = null
         }
 
-        fun reply() {
+        fun reply(timedOut: Boolean) {
             if (!replied.compareAndSet(false, true)) return
             releaseReceiver()
             val failed = failedRecipients.size
-            val sent = numbers.size - failed
+            val sent = numbers.indices.count { i ->
+                i !in failedRecipients && synchronized(confirmedParts) {
+                    confirmedParts[i] == parts.size
+                }
+            }
+            // Neither confirmed nor rejected: the result never came back. These
+            // used to be counted as sent, which is how a send that never left the
+            // phone could still be reported as a success.
+            val unconfirmed = numbers.size - sent - failed
+            Log.i(
+                SMS_LOG_TAG,
+                "Result${if (timedOut) " (after ${SMS_RESULT_TIMEOUT_MS}ms timeout)" else ""}: " +
+                    "sent=$sent failed=$failed unconfirmed=$unconfirmed",
+            )
             if (sent == 0) {
-                result.error("sms_failed", "Every message was rejected by the network.", null)
+                val reason = if (failed > 0) {
+                    "Every message was rejected by the network."
+                } else {
+                    "No confirmation came back from the network for any message."
+                }
+                result.error("sms_failed", reason, null)
             } else {
-                result.success(mapOf("sent" to sent, "failed" to failed))
+                result.success(
+                    mapOf("sent" to sent, "failed" to failed, "unconfirmed" to unconfirmed)
+                )
             }
         }
 
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
                 val recipient = intent?.getIntExtra(EXTRA_SMS_RECIPIENT, -1) ?: -1
-                if (resultCode != Activity.RESULT_OK && recipient >= 0) {
-                    failedRecipients.add(recipient)
+                val code = resultCode
+                val number = numbers.getOrNull(recipient) ?: "?"
+                if (code == Activity.RESULT_OK) {
+                    Log.i(SMS_LOG_TAG, "Network ACCEPTED part for $number")
+                    if (recipient >= 0) {
+                        synchronized(confirmedParts) { confirmedParts[recipient]++ }
+                    }
+                } else {
+                    Log.w(SMS_LOG_TAG, "Network REJECTED part for $number: ${smsResultName(code)}")
+                    if (recipient >= 0) failedRecipients.add(recipient)
                 }
-                if (outcomes.incrementAndGet() >= expected) reply()
+                if (outcomes.incrementAndGet() >= expected) reply(timedOut = false)
             }
         }
         smsResultReceiver = receiver
@@ -302,7 +311,7 @@ class MainActivity : FlutterActivity() {
         )
 
         // Delivery reports can be slow or never arrive; don't hang the SOS flow.
-        onTimeout = Runnable { reply() }
+        onTimeout = Runnable { reply(timedOut = true) }
         handler.postDelayed(onTimeout, SMS_RESULT_TIMEOUT_MS)
 
         try {
@@ -321,21 +330,38 @@ class MainActivity : FlutterActivity() {
                     )
                 }
                 try {
+                    Log.i(SMS_LOG_TAG, "Submitting SMS to $number")
                     sms.sendMultipartTextMessage(number, null, parts, sentIntents, null)
                 } catch (e: SecurityException) {
                     throw e // a permission problem affects every recipient
                 } catch (e: Exception) {
                     // Rejected outright — no broadcast will arrive for it.
+                    Log.e(SMS_LOG_TAG, "SmsManager refused $number", e)
                     failedRecipients.add(recipient)
-                    if (outcomes.addAndGet(parts.size) >= expected) reply()
+                    if (outcomes.addAndGet(parts.size) >= expected) reply(timedOut = false)
                 }
             }
         } catch (e: SecurityException) {
+            Log.e(SMS_LOG_TAG, "SEND_SMS permission denied", e)
             if (replied.compareAndSet(false, true)) {
                 releaseReceiver()
                 result.error("sms_permission_denied", "SEND_SMS permission denied.", null)
             }
         }
+    }
+
+    /** Readable name for an SMS sent-intent result code, for the log. */
+    private fun smsResultName(code: Int): String = when (code) {
+        Activity.RESULT_OK -> "OK"
+        SmsManager.RESULT_ERROR_GENERIC_FAILURE -> "GENERIC_FAILURE (1)"
+        SmsManager.RESULT_ERROR_RADIO_OFF -> "RADIO_OFF (2) — airplane mode or radio disabled"
+        SmsManager.RESULT_ERROR_NULL_PDU -> "NULL_PDU (3)"
+        SmsManager.RESULT_ERROR_NO_SERVICE -> "NO_SERVICE (4) — no cellular signal"
+        SmsManager.RESULT_ERROR_LIMIT_EXCEEDED -> "LIMIT_EXCEEDED (5) — sending rate limit"
+        SmsManager.RESULT_ERROR_FDN_CHECK_FAILURE -> "FDN_CHECK_FAILURE (6)"
+        SmsManager.RESULT_ERROR_SHORT_CODE_NOT_ALLOWED -> "SHORT_CODE_NOT_ALLOWED (7)"
+        SmsManager.RESULT_ERROR_SHORT_CODE_NEVER_ALLOWED -> "SHORT_CODE_NEVER_ALLOWED (8)"
+        else -> "error code $code"
     }
 
     /**

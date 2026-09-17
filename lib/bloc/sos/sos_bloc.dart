@@ -1,4 +1,5 @@
 import 'package:equatable/equatable.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../services/alarm_service.dart';
@@ -19,14 +20,29 @@ enum RingOutcome {
   /// We had a network but the request to the backend failed.
   requestFailed,
 
-  /// The backend accepted the push; [RingResult.count] devices were targeted.
+  /// The backend processed the request; see [RingResult]'s counts for what it
+  /// actually found and reached.
   delivered,
 }
 
 class RingResult {
   final RingOutcome outcome;
-  final int count;
-  const RingResult(this.outcome, [this.count = 0]);
+
+  /// Contact devices the backend found eligible to ring.
+  final int targeted;
+
+  /// Of those, how many FCM accepted.
+  final int delivered;
+
+  /// Of those, how many FCM rejected.
+  final int failed;
+
+  const RingResult(
+    this.outcome, {
+    this.targeted = 0,
+    this.delivered = 0,
+    this.failed = 0,
+  });
 }
 
 // ─────────────────────────── Events ───────────────────────────
@@ -135,12 +151,28 @@ class SosBloc extends Bloc<SosEvent, SosState> {
     try {
       final profile = await ProfileStore.instance.load();
       final fcmToken = await PushService.instance.getToken();
+      // Only a fingerprint: the full token is long and not needed to tell
+      // whether the server is excluding the right device.
+      final tokenTail = fcmToken == null
+          ? '(none — this phone cannot be excluded!)'
+          : '…${fcmToken.substring(fcmToken.length - 12)}';
+      debugPrint('$ringLogTag sending ring request, ourToken=$tokenTail');
+
       final response = await _api.request('POST', '/devices/ring', body: {
         'fromName': profile.name.isNotEmpty ? profile.name : 'A contact',
         if (fcmToken != null) 'fcmToken': fcmToken,
       });
-      return RingResult(RingOutcome.delivered, response['delivered'] as int? ?? 0);
-    } on ApiException {
+      debugPrint('$ringLogTag server response: targeted='
+          '${response['targeted']} delivered=${response['delivered']} '
+          'failed=${response['failed']}');
+      return RingResult(
+        RingOutcome.delivered,
+        targeted: response['targeted'] as int? ?? 0,
+        delivered: response['delivered'] as int? ?? 0,
+        failed: response['failed'] as int? ?? 0,
+      );
+    } on ApiException catch (e) {
+      debugPrint('$ringLogTag ring request FAILED: ${e.message}');
       return const RingResult(RingOutcome.requestFailed);
     }
   }
@@ -157,9 +189,19 @@ class SosBloc extends Bloc<SosEvent, SosState> {
     final broadcastText = switch (ring.outcome) {
       RingOutcome.offline => 'No internet — skipped the alarm alert.',
       RingOutcome.requestFailed => 'Could not reach the server to alert your contacts.',
-      RingOutcome.delivered when ring.count == 0 => 'No app-using contacts to alert.',
-      RingOutcome.delivered when ring.count == 1 => 'Ringing 1 contact\'s device.',
-      RingOutcome.delivered => 'Ringing ${ring.count} contacts\' devices.',
+      // Nobody eligible: no contact has the app registered under the number
+      // saved for them. Nothing was even attempted.
+      RingOutcome.delivered when ring.targeted == 0 =>
+        'No contacts have the app — no alarm sent.',
+      // Devices were found, but every push was rejected — a delivery problem,
+      // not a missing contact. Kept distinct so it isn't misread as the above.
+      RingOutcome.delivered when ring.delivered == 0 =>
+        'Alarm failed to reach ${ring.targeted} device(s).',
+      RingOutcome.delivered when ring.failed > 0 =>
+        'Alarm reached ${ring.delivered} of ${ring.targeted} devices.',
+      RingOutcome.delivered when ring.delivered == 1 =>
+        'Ringing 1 contact\'s device.',
+      RingOutcome.delivered => 'Ringing ${ring.delivered} contacts\' devices.',
     };
     final smsText = switch (smsResult.result) {
       EmergencySmsResult.sent when smsResult.sent < smsResult.total =>
