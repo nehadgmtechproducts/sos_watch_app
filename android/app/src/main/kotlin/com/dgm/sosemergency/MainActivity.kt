@@ -112,17 +112,19 @@ class MainActivity : FlutterActivity() {
                 val hasDndAccess = Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
                     nm.isNotificationPolicyAccessGranted
                 when (call.method) {
-                    // Max the ALARM stream and lift DND. Delegates to the guard
-                    // shared with SosMessagingService, which may already have
-                    // raised it when the push arrived — the guard keeps the
-                    // user's true original rather than recording "max".
-                    "raiseAlarm" -> {
-                        AlarmVolumeGuard.raise(this)
+                    // Start (or refresh) the native siren. Idempotent: when the
+                    // app was closed, SosMessagingService already started it as
+                    // the push arrived, and this just keeps it going.
+                    "startAlarm" -> {
+                        SosAlarmService.start(
+                            this,
+                            call.argument<String>("fromName") ?: "A contact",
+                        )
                         result.success(true)
                     }
-                    // Put the original volume and DND back.
-                    "restoreAlarm" -> {
-                        AlarmVolumeGuard.restore(this)
+                    // Stop the siren and restore the user's volume and DND.
+                    "stopAlarm" -> {
+                        SosAlarmService.stop(this)
                         result.success(true)
                     }
                     "isDndAccessGranted" -> result.success(hasDndAccess)

@@ -60,13 +60,19 @@ class AlarmService {
     await WakelockPlus.enable();
 
     if (Platform.isAndroid) {
-      // Force the ALARM stream to max and lift DND, so a low/zero alarm volume
-      // or Do-Not-Disturb can't quiet us. Idempotent: the push service may have
-      // already raised it, and the guard keeps the original either way.
+      // Android: the native SosAlarmService plays the siren, raises alarm
+      // volume and lifts DND. It is the single source of sound in every app
+      // state — when the app was closed it is already ringing by the time we
+      // get here (started by the push), and this call just keeps it going.
+      // Playing here too would stack a second siren on top of it.
       try {
-        await _native.invokeMethod('raiseAlarm');
+        await _native.invokeMethod(
+            'startAlarm', {'fromName': data['fromName'] ?? 'A contact'});
       } catch (_) {}
+      return;
     }
+
+    // iOS: in-app playback.
 
     // Route playback to the ALARM stream so silent mode does not mute it.
     await _player.setAudioContext(
@@ -101,17 +107,19 @@ class AlarmService {
   Future<void> stop() async {
     if (_ringing) {
       _ringing = false;
-      await _player.stop();
-      Vibration.cancel();
       await WakelockPlus.disable();
+      if (!Platform.isAndroid) {
+        await _player.stop();
+        Vibration.cancel();
+      }
     }
 
-    // Restore even when the in-app siren never started: with the app closed,
-    // the push service raised the volume on its own, and this is the only
-    // place it gets put back. The guard is a no-op if nothing was raised.
+    // Stop even when this class never started the alarm: with the app closed,
+    // the push started the native siren on its own, and this is the only place
+    // it gets stopped. Also restores volume/DND; a no-op if nothing is ringing.
     if (Platform.isAndroid) {
       try {
-        await _native.invokeMethod('restoreAlarm');
+        await _native.invokeMethod('stopAlarm');
       } catch (_) {}
     }
   }

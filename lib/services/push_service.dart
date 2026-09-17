@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show Platform;
-import 'dart:typed_data';
 
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -36,37 +35,6 @@ const _pendingRingMaxAge = Duration(minutes: 10);
 
 /// Grep-able prefix for the whole ring path: `adb logcat | grep SOS-RING`.
 const ringLogTag = '[SOS-RING]';
-
-/// The siren, as an Android raw resource (android/app/src/main/res/raw).
-/// The Flutter asset can't be used here: a notification channel's sound is
-/// played by the system, which has no access to Flutter's asset bundle.
-const _sirenSound = RawResourceAndroidNotificationSound('siren');
-
-final Int64List sosVibrationPattern =
-    Int64List.fromList(<int>[0, 800, 400, 800, 400, 800]);
-
-/// Channel for a ring that arrives while the app is **not** in the foreground.
-///
-/// The system plays this sound itself, which matters because the background
-/// isolate cannot drive AlarmService — that lives in the UI isolate, which is
-/// not running. Routing it through [AudioAttributesUsage.alarm] puts it on
-/// STREAM_ALARM, so ringer-silent does not mute it, exactly as an alarm clock
-/// stays audible.
-///
-/// A new id on purpose: channel settings are immutable once created, so devices
-/// that already have the old silent `sos_alarm_channel` would otherwise keep
-/// playing nothing forever.
-final loudSosChannel = AndroidNotificationChannel(
-  'sos_alarm_loud_v1',
-  'SOS Emergency Alarm',
-  description: 'Full-screen emergency alerts from your linked contacts.',
-  importance: Importance.max,
-  playSound: true,
-  sound: _sirenSound,
-  audioAttributesUsage: AudioAttributesUsage.alarm,
-  enableVibration: true,
-  vibrationPattern: sosVibrationPattern,
-);
 
 const _otpChannel = AndroidNotificationChannel(
   'otp_notifications',
@@ -167,40 +135,11 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       }),
     );
   } catch (_) {}
-  // This isolate may be the app's first run, so the channel might not exist yet.
-  // Creating a channel is idempotent, so this is safe to repeat.
-  await plugin
-      .resolvePlatformSpecificImplementation<
-          AndroidFlutterLocalNotificationsPlugin>()
-      ?.createNotificationChannel(loudSosChannel);
-  await plugin.show(
-    id: _sosNotificationId,
-    title: '🚨 EMERGENCY',
-    body: '$fromName needs help — tap to open',
-    notificationDetails: NotificationDetails(
-      android: AndroidNotificationDetails(
-        loudSosChannel.id,
-        loudSosChannel.name,
-        channelDescription: loudSosChannel.description,
-        importance: Importance.max,
-        priority: Priority.high,
-        category: AndroidNotificationCategory.alarm,
-        fullScreenIntent: true,
-        ongoing: true,
-        autoCancel: false,
-        playSound: true,
-        sound: _sirenSound,
-        audioAttributesUsage: AudioAttributesUsage.alarm,
-        enableVibration: true,
-        vibrationPattern: sosVibrationPattern,
-        visibility: NotificationVisibility.public,
-        // FLAG_INSISTENT: repeat the sound until the notification is cancelled.
-        // A channel sound otherwise plays once, which is not an alarm.
-        additionalFlags: Int32List.fromList(<int>[4]),
-      ),
-    ),
-    payload: 'sos',
-  );
+  // No notification or sound from here: on Android the native
+  // SosMessagingService already started SosAlarmService for this push, which
+  // plays the siren and posts the SOS notification. A notification-channel
+  // siren posted here would both double up and, from Android 15, can be
+  // demoted by the system to vibration only.
 }
 
 /// Firebase Cloud Messaging: fetches this device's FCM token on launch and

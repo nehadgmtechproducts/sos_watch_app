@@ -9,6 +9,11 @@
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT"/>
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
     <uses-permission android:name="android.permission.VIBRATE"/>
+    <!-- SosAlarmService plays the siren from a foreground service, so it keeps
+         ringing with the app closed. mediaPlayback is the type for audible
+         playback the user is aware of. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
     <uses-permission android:name="android.permission.CALL_PHONE"/>
     <!-- Lets the emergency call sequence detect when one call has ended so the
          next contact can be dialled instead of guessing with a fixed timer. -->
@@ -77,6 +82,11 @@
                 <action android:name="com.google.firebase.MESSAGING_EVENT" />
             </intent-filter>
         </service>
+
+        <service
+            android:name=".SosAlarmService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
 
         <receiver android:name=".SosWidgetProvider" android:exported="true">
             <intent-filter>

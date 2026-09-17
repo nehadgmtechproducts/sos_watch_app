@@ -1,3 +1,5 @@
+import 'dart:io' show Platform;
+
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 /// Shows the SOS as a high-importance, full-screen-intent notification.
@@ -49,6 +51,10 @@ class NotificationService {
   }
 
   Future<void> showSosFullScreen(Map<String, dynamic> data) async {
+    // On Android the native SosAlarmService posts the SOS notification (same
+    // id) as part of running the siren. Posting it here as well would replace
+    // the service's notification with one it doesn't own.
+    if (Platform.isAndroid) return;
     final from = (data['fromName'] as String?) ?? 'A contact';
 
     final androidDetails = AndroidNotificationDetails(
